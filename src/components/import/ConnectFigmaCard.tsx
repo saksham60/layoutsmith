@@ -9,18 +9,23 @@ export default function ConnectFigmaButton({
   const popupRef = useRef<Window | null>(null);
 
   useEffect(() => {
-    const onMsg = (e: MessageEvent) => {
-      if (!e.data || e.data.type !== "figma:token") return;
-      sessionStorage.setItem("figma_token", JSON.stringify(e.data.token));
-      try {
-        popupRef.current?.close();
-      } catch {}
-      onConnected?.(e.data.token);
-    };
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, [onConnected]);
+  const onMsg = (e: MessageEvent) => {
+    // must match what the callback posts
+    if (!e?.data || e.data.type !== 'figma:connected') return;
 
+    // ensure it's our own origin (works on localhost and prod)
+    if (e.origin !== window.location.origin) return;
+
+    try { popupRef.current?.close(); } catch {}
+
+    // we don't send tokens to the client anymore; cookie is set server-side
+    // keep your existing signature: pass a truthy value
+    onConnected?.(true);
+  };
+
+  window.addEventListener('message', onMsg);
+  return () => window.removeEventListener('message', onMsg);
+}, [onConnected]);
   const onClick = () => {
     const client_id = process.env.NEXT_PUBLIC_FIGMA_CLIENT_ID!;
     const redirect_uri = encodeURIComponent(

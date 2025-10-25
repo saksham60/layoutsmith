@@ -3,11 +3,8 @@
 /**
  * FigmaReactAgent.tsx
  * ------------------------------------------------------------
- * High-level import & generate screen:
- * - Connect to Figma
- * - Paste a Figma URL/iframe and import items
- * - Build rich LLM briefs, log to console
- * - Generate React code for the selected item via Bedrock API
+ * Cookie-safe import & generate screen (single server route)
+ * Uses: /api/figma/file/components?kind=components|document|nodes
  */
 
 import React, { useEffect, useState } from 'react';
@@ -20,12 +17,6 @@ import CodeEditor from '@/components/workspace/CodeEditor';
 import PreviewPane from '@/components/workspace/PreviewPane';
 
 import type { ComponentItem } from '@/components/types';
-import {
-  getFigmaFileComponents,
-  getFileDocument,
-  collectInterestingNodes,
-  getFileNodes,
-} from '@/app/lib/figmaClient';
 
 /* ------------------------------------------------------------
  * Small inline spinner for overlays
@@ -51,7 +42,6 @@ function extractFileKey(input: string): string | null {
   } catch {
     return null;
   }
-  // Support both app & embed URLs
   const fromApp = /\/file\/([A-Za-z0-9_-]+)\//.exec(url.pathname)?.[1];
   const fromEmbed = /\/design\/([A-Za-z0-9_-]+)\//.exec(url.pathname)?.[1];
   return fromApp || fromEmbed || null;
@@ -135,25 +125,129 @@ function briefForNode(node: any) {
 }
 
 /* ============================================================
+ * Fallback: find interesting nodes in a Figma file document
+ * ============================================================ */
+function collectInterestingNodes(doc: any): Array<{ id: string; name: string; type: string }> {
+  const out: Array<{ id: string; name: string; type: string }> = [];
+  const stack = Array.isArray(doc?.document?.children) ? [...doc.document.children] : [];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n) continue;
+    if (['FRAME', 'SECTION', 'COMPONENT_SET', 'COMPONENT'].includes(n.type)) {
+      out.push({ id: n.id, name: n.name, type: n.type });
+    }
+    if (Array.isArray(n.children)) stack.push(...n.children);
+  }
+  return out;
+}
+
+/* ============================================================
  * Map Figma node types to editor types
- * ComponentItem['type'] is 'Component' | 'Section'
  * ============================================================ */
 const kindFromFigma = (t: string): ComponentItem['type'] =>
   t === 'FRAME' || t === 'SECTION' ? 'Section' : 'Component';
 
 /* ============================================================
+ * Server API helpers (cookie is sent automatically)
+ * Robust error handling for 404 HTML pages
+ * ============================================================ */
+class UnauthorizedError extends Error {}
+class HttpError extends Error {
+  status: number;
+  body?: any;
+  constructor(status: number, message: string, body?: any) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function fetchJSON(url: string) {
+  const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
+
+  const ct = r.headers.get('content-type') || '';
+  const text = await r.text();
+
+  // Try to parse JSON if possible
+  let data: any = undefined;
+  if (ct.includes('application/json')) {
+    try { data = JSON.parse(text); } catch {}
+  }
+
+  if (!r.ok) {
+    const isHTML = !ct || ct.includes('text/html') || /^<!DOCTYPE html>/i.test(text);
+    const msgFromJSON = data?.error || data?.message;
+    const message =
+      msgFromJSON ||
+      (isHTML
+        ? `Route ${url} responded with ${r.status}. This usually means the API route is missing or path is wrong.`
+        : (text || r.statusText));
+
+    if (r.status === 401) throw new UnauthorizedError(message);
+    throw new HttpError(r.status, message, isHTML ? undefined : data ?? text);
+  }
+
+  // OK branch: return parsed JSON (or try to parse now if ct lied)
+  if (data !== undefined) return data;
+  try { return JSON.parse(text); } catch {
+    throw new HttpError(500, `Expected JSON from ${url} but got non-JSON response.`);
+  }
+}
+
+/* ---------- SINGLE server route helpers ---------- */
+// All through: /api/figma/file/components?kind=components|document|nodes
+async function apiGetFileComponents(fileKey: string) {
+  const data = await fetchJSON(
+    `/api/figma/file/components?kind=components&fileKey=${encodeURIComponent(fileKey)}`
+  );
+  return (data?.components ?? []) as Array<{ node_id: string; name: string; type?: string }>;
+}
+
+async function apiGetFileDocument(fileKey: string) {
+  return await fetchJSON(
+    `/api/figma/file/components?kind=document&fileKey=${encodeURIComponent(fileKey)}`
+  );
+}
+
+async function apiGetFileNodes(fileKey: string, ids: string[]) {
+  const url = `/api/figma/file/components?kind=nodes&fileKey=${encodeURIComponent(
+    fileKey
+  )}&ids=${encodeURIComponent(ids.join(','))}`;
+  const data = await fetchJSON(url);
+  return (data?.nodes ?? {}) as Record<string, any>;
+}
+
+/* ============================================================
  * Component: FigmaReactAgent (main UX)
  * ============================================================ */
 export default function FigmaReactAgent() {
-  // Tabs
   const [activeTab, setActiveTab] = useState<'import' | 'workspace'>('import');
 
-  // Figma token presence (set by ConnectFigmaCard)
+  // Session status
   const [hasToken, setHasToken] = useState(false);
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setHasToken(!!sessionStorage.getItem('figma_token'));
+    let cancelled = false;
+
+    // quick hint cookie
+    if (typeof document !== 'undefined') {
+      const hinted = document.cookie.split('; ').some((c) => c.startsWith('figma_connected=1'));
+      if (hinted) setHasToken(true);
     }
+
+    // authoritative check
+    (async () => {
+      try {
+        const r = await fetch('/api/figma/session', { credentials: 'include', cache: 'no-store' });
+        const { connected } = await r.json();
+        if (!cancelled) setHasToken(!!connected);
+      } catch {
+        if (!cancelled) setHasToken(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Paste box content
@@ -163,7 +257,7 @@ export default function FigmaReactAgent() {
   const [components, setComponents] = useState<ComponentItem[]>([]);
   const [selectedComponent, setSelectedComponent] = useState<ComponentItem | null>(null);
 
-  // LLM briefs aligned by editor index (idx in components[])
+  // LLM briefs aligned by editor index
   const [llmBriefs, setLlmBriefs] = useState<any[]>([]);
 
   // Loading flags
@@ -171,7 +265,8 @@ export default function FigmaReactAgent() {
   const [generating, setGenerating] = useState(false);
 
   /* ------------------------------------------------------------
-   * Import flow
+   * Import flow (cookie-based, via single server proxy)
+   * - If components kind 404s, auto-fallback to document kind
    * ------------------------------------------------------------ */
   const importFromPaste = async () => {
     const fileKey = extractFileKey(pasteValue);
@@ -183,32 +278,56 @@ export default function FigmaReactAgent() {
     try {
       setImporting(true);
 
-      // 1) Try explicit components
-      const figmaComps = await getFigmaFileComponents(fileKey);
       let items: Array<{ id: string; name: string; type: string }> = [];
+      let compsError: any = null;
 
-      if (figmaComps?.length) {
-        items = figmaComps.slice(0, 300).map((c: any) => ({
-          id: c.node_id,
-          name: c.name,
-          type: 'COMPONENT',
-        }));
+      // 1) Try explicit components
+      try {
+        const figmaComps = await apiGetFileComponents(fileKey);
+        if (figmaComps?.length) {
+          items = figmaComps.slice(0, 300).map((c: any) => ({
+            id: c.node_id,
+            name: c.name,
+            type: 'COMPONENT',
+          }));
+        }
+      } catch (e: any) {
+        compsError = e;
+        if (!(e instanceof HttpError && e.status === 404)) {
+          throw e; // other errors: rethrow
+        }
       }
 
       // 2) Fallback: document → top frames + component sets
       if (items.length === 0) {
-        const doc = await getFileDocument(fileKey);
-        const interesting = collectInterestingNodes(doc);
-        if (!interesting.length) {
-          alert('No frames/components found in this file.');
-          return;
+        try {
+          const doc = await apiGetFileDocument(fileKey);
+          const interesting = collectInterestingNodes(doc);
+          if (!interesting.length) {
+            if (compsError) {
+              const msg = compsError?.message || 'No frames/components found in this file.';
+              throw new Error(msg);
+            }
+            alert('No frames/components found in this file.');
+            return;
+          }
+          items = interesting.slice(0, 300);
+        } catch (e: any) {
+          if (compsError) {
+            const msg = [
+              'Import failed:',
+              `- Components: ${compsError?.message ?? compsError}`,
+              `- Document: ${e?.message ?? e}`,
+            ].join('\n');
+            throw new Error(msg);
+          }
+          throw e;
         }
-        items = interesting.slice(0, 300);
       }
 
       // 3) Fetch full nodes and build briefs
       const idList = items.map((i) => i.id);
-      const nodesById = await getFileNodes(fileKey, idList);
+      const nodesById = await apiGetFileNodes(fileKey, idList);
       const briefs = idList
         .map((id) => nodesById[id])
         .filter(Boolean)
@@ -217,11 +336,11 @@ export default function FigmaReactAgent() {
       console.log('[LLM_BRIEFS]', briefs);
       setLlmBriefs(briefs);
 
-      // 4) Fill editor with placeholders (FIXED: type mapping)
+      // 4) Fill editor with placeholders (type mapping)
       const mapped: ComponentItem[] = items.map((n, idx) => ({
         id: idx + 1,
         name: n.name,
-        type: kindFromFigma(n.type), // <= maps FRAME/SECTION -> 'Section', others -> 'Component'
+        type: kindFromFigma(n.type),
         variants: 1,
         code:
           '// React code will be generated by the LLM using the console [LLM_BRIEFS] details for this item.\n' +
@@ -231,9 +350,32 @@ export default function FigmaReactAgent() {
       setComponents(mapped);
       setSelectedComponent(mapped[0] ?? null);
       setActiveTab('workspace');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Import failed:', err);
-      alert('Failed to import from this file. Check token/scopes and try a different link.');
+
+      const msg = String(err?.message || err || 'Import failed');
+      if (msg.includes('/api/figma/file/components') && msg.includes('responded with 404')) {
+        alert(
+          [
+            'Import failed: API route not found.',
+            'Make sure this file exists and restart dev server:',
+            '  - src/app/api/figma/file/components/route.ts',
+          ].join('\n')
+        );
+      } else if (/403/i.test(msg) && /scope|Unauthorized|Forbidden|Invalid/i.test(msg)) {
+        alert(
+          [
+            'Figma authorization error (403).',
+            'Re-connect with scopes:',
+            'current_user:read projects:read file_content:read file_metadata:read file_versions:read file_comments:read library_content:read',
+            'Also ensure the authorized Figma user can access this file.',
+          ].join('\n')
+        );
+      } else if (err instanceof UnauthorizedError) {
+        alert('Please connect to Figma first (popup).');
+      } else {
+        alert(msg);
+      }
     } finally {
       setImporting(false);
     }
@@ -266,7 +408,6 @@ export default function FigmaReactAgent() {
         throw new Error(`Bedrock API error (${res.status}): ${errTxt}`);
       }
 
-      // API returns { ok, results: [{ name, code }], raw? }
       const data: any = await res.json();
       const code: string | undefined = data?.results?.[0]?.code || data?.code || data?.raw;
 
@@ -299,10 +440,8 @@ export default function FigmaReactAgent() {
    * ============================================================ */
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-900 text-white">
-      {/* Top navigation bar */}
       <TopNav />
 
-      {/* -------- Import tab -------- */}
       {activeTab === 'import' && (
         <section className="max-w-7xl mx-auto px-6 py-20">
           {/* Hero */}
@@ -373,7 +512,6 @@ export default function FigmaReactAgent() {
         </section>
       )}
 
-      {/* -------- Workspace tab -------- */}
       {activeTab === 'workspace' && (
         <div className="max-w-7xl mx-auto px-6 py-8">
           {/* Header actions */}
@@ -420,10 +558,8 @@ export default function FigmaReactAgent() {
               )}
             </div>
 
-            {/* Pass isGenerating to PreviewPane */}
+            {/* Preview */}
             <PreviewPane selected={selectedComponent} generating={generating} />
-
-            
           </div>
         </div>
       )}

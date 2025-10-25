@@ -1,0 +1,73 @@
+LayoutSmith Scanner Report — 2025-10-25 18:52:44
+Root: D:\Code\LayoutSmith\Code\Frontend\layoutsmith
+Files scanned: 68
+
+================================================================================
+
+## Session storage usage
+
+src\app\lib\figma.ts:4:   const raw = sessionStorage.getItem('figma_token')
+src\app\lib\figmaClient.ts:85:   const tokenJson = sessionStorage.getItem('figma_token');
+src\app\lib\figmaClient.ts:87:     throw new Error('Missing Figma token in sessionStorage. Connect to Figma first.');
+src\app\lib\figmaClient.ts:91:     throw new Error('Invalid token shape in sessionStorage.figma_token');
+src\app\lib\figmaFramesClient.ts:19:   const tokRaw = sessionStorage.getItem('figma_token');
+src\app\lib\figmaLLMPayload.ts:6:   const raw = typeof window !== 'undefined' ? sessionStorage.getItem('figma_token') : null;
+src\app\lib\figmaLLMPayload.ts:7:   if (!raw) throw new Error('No Figma token in sessionStorage. Connect first.');
+src\components\FigmaReactAgent.tsx:155:       setHasToken(!!sessionStorage.getItem('figma_token'));
+src\components\import\ConnectFigmaCard.tsx:14:       sessionStorage.setItem("figma_token", JSON.stringify(e.data.token));
+
+
+## Token prop / session variable patterns
+
+scan_layoutsmith.py:39:         re.compile(r"(figma[^\\n]{0,80}token|accessToken|refreshToken)", re.IGNORECASE),
+search.py:52:         re.compile(r"(figma[^\\n]{0,80}token|accessToken|refreshToken)", re.IGNORECASE),
+src\app\api\figma\callback\route.ts:19:   const r = await fetch('https://api.figma.com/v1/oauth/token', {
+src\app\api\figma\callback\route.ts:42:         window.opener.postMessage({ type: 'figma:token', token: ${safe} }, '${openerOrigin}');
+src\app\api\figma\exchange\route.ts:29:   const r = await fetch('https://api.figma.com/v1/oauth/token', {
+src\app\api\figma\extract\route.ts:7:  * Header: X-Figma-Token: <OAuth access_token>
+src\app\api\figma\extract\route.ts:39:     const token = req.headers.get('x-figma-token') || ''
+src\app\api\figma\extract\route.ts:40:     if (!token) return bad('Missing X-Figma-Token header', 401)
+src\app\api\figma\extract\route.ts:47:       headers: { 'X-Figma-Token': token },
+src\app\api\figma\extract\route.ts:92:         { headers: { 'X-Figma-Token': token } }
+src\app\lib\figma.ts:2: export function getFigmaToken(): { access_token: string } | null {
+src\app\lib\figma.ts:4:   const raw = sessionStorage.getItem('figma_token')
+src\app\lib\figma.ts:9:   const tok = getFigmaToken()
+src\app\lib\figma.ts:10:   if (!tok) throw new Error('No Figma token — connect first.')
+src\app\lib\figmaClient.ts:5:  * Assumes OAuth token is stored in sessionStorage under "figma_token"
+src\app\lib\figmaClient.ts:81: function getAccessTokenOrThrow(): string {
+src\app\lib\figmaClient.ts:83:     throw new Error('Figma token is only available client-side');
+src\app\lib\figmaClient.ts:85:   const tokenJson = sessionStorage.getItem('figma_token');
+src\app\lib\figmaClient.ts:87:     throw new Error('Missing Figma token in sessionStorage. Connect to Figma first.');
+src\app\lib\figmaClient.ts:91:     throw new Error('Invalid token shape in sessionStorage.figma_token');
+src\app\lib\figmaClient.ts:97:   const token = getAccessTokenOrThrow();
+src\app\lib\figmaClient.ts:226: //   const token = getAccessTokenOrThrow();
+src\app\lib\figmaFramesClient.ts:19:   const tokRaw = sessionStorage.getItem('figma_token');
+src\app\lib\figmaFramesClient.ts:20:   if (!tokRaw) throw new Error('No Figma token in session. Connect first.');
+src\app\lib\figmaFramesClient.ts:22:   const accessToken: string = tok.access_token;
+src\app\lib\figmaFramesClient.ts:25:     headers: { Authorization: `Bearer ${accessToken}` },
+src\app\lib\figmaLLMPayload.ts:6:   const raw = typeof window !== 'undefined' ? sessionStorage.getItem('figma_token') : null;
+src\app\lib\figmaLLMPayload.ts:7:   if (!raw) throw new Error('No Figma token in sessionStorage. Connect first.');
+src\components\FigmaReactAgent.tsx:151:   // Figma token presence (set by ConnectFigmaCard)
+src\components\FigmaReactAgent.tsx:155:       setHasToken(!!sessionStorage.getItem('figma_token'));
+src\components\import\ConnectFigmaCard.tsx:13:       if (!e.data || e.data.type !== "figma:token") return;
+src\components\import\ConnectFigmaCard.tsx:14:       sessionStorage.setItem("figma_token", JSON.stringify(e.data.token));
+src\components\sections\HowItWorks.tsx:7:     { icon: Upload, title: 'Import Design', desc: 'Connect Figma via MCP. Auto-extract tokens, variants & layout structure.' },
+
+
+## API routes / callback references
+
+.env.local:3: # FIGMA_REDIRECT_URI=http://localhost:3000/api/figma/callback
+.env.local:7: FIGMA_REDIRECT_URI=https://layoutsmith-8liozebbm-saksham22s-projects.vercel.app/api/figma/callback
+.env.local:10: NEXT_PUBLIC_FIGMA_REDIRECT_URI=https://layoutsmith-8liozebbm-saksham22s-projects.vercel.app/api/figma/callback
+scan_layoutsmith.py:43:         re.compile(r"(/api/figma/|figma/callback)", re.IGNORECASE),
+search.py:56:         re.compile(r"(/api/figma/|figma/callback)", re.IGNORECASE),
+src\app\api\figma\callback\route.ts:14:     redirect_uri: process.env.FIGMA_REDIRECT_URI!, // http://localhost:3000/api/figma/callback
+src\app\api\figma\extract\route.ts:5:  * POST /api/figma/extract
+src\app\api\figma\frames\route.ts:1: // src/app/api/figma/frames/route.ts
+src\app\api\figma\login\route.ts:22:     redirect_uri: process.env.FIGMA_REDIRECT_URI!, // http://localhost:3000/api/figma/callback
+src\app\api\figma\me\route.ts:1: // src/app/api/figma/me/route.ts
+src\app\api\figma\resolve\route.ts:4:  * POST /api/figma/resolve
+src\app\lib\figmaFramesClient.ts:24:   const r = await fetch(`/api/figma/frames?fileKey=${encodeURIComponent(fileKey)}`, {
+
+
+Summary: 54 total matches across 68 files.
